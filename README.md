@@ -1,6 +1,6 @@
 # Simulador de Sistema de Arquivos com Journaling (Java)
 
-**Repositório no GitHub:** https://github.com/Soriedem76/TrabalhoAv3-SistemaOperacional
+**Repositório no GitHub:** https://github.com/JuanDoth/Simulador-de-Sistema-de-Arquivos
 
 **Disciplina:** Sistemas Operacionais · **Trabalho AV3** · **Dupla:** Gustavo e Juan Doth Camerino Costa Coelho
 
