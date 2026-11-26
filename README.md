@@ -109,75 +109,81 @@ O sistema de arquivos é representado como uma **árvore** em memória, usando o
 
 ```mermaid
 classDiagram
-    class Node {
-        <<abstract>>
-        #String nome
-        #Directory pai
-        #LocalDateTime criadoEm
-        #LocalDateTime modificadoEm
-        +getCaminho() String
-        +getTamanho() long
-        +isDiretorio() boolean
-    }
-    class File {
-        -String conteudo
-        +getConteudo() String
-        +setConteudo(String)
-        +copiar() File
-    }
-    class Directory {
-        -Map~String, Node~ filhos
-        +contem(String) boolean
-        +buscar(String) Node
-        +listarFilhos() List~Node~
-        +estaVazio() boolean
-    }
-    class FileSystemSimulator {
-        -Directory raiz
-        -Journal journal
-        -long ultimoIdAplicado
-        +criarDiretorio(String)
-        +apagarDiretorio(String, boolean)
-        +renomearDiretorio(String, String)
-        +criarArquivo(String, String)
-        +copiarArquivo(String, String)
-        +apagarArquivo(String)
-        +renomearArquivo(String, String)
-        +listar(String) List~String~
-        +salvar(String)
-        +carregar(String)$ FileSystemSimulator
-    }
-    class Journal {
-        -Path arquivoLog
-        -long proximoId
-        +registrar(String, String...) long
-        +confirmar(long)
-        +abortar(long)
-        +recuperar(FileSystemSimulator) Recuperacao
-        +checkpoint(FileSystemSimulator, String)
-        +lerEntradas() List~EntradaJournal~
-    }
-    class EntradaJournal {
-        -long id
-        -String tipo
-        -List~String~ parametros
-        -LocalDateTime timestamp
-        -Status status
-    }
-    class Shell {
-        -String dirAtual
-        +montar()
-        +loop()
-        +executarLinha(String) boolean
-    }
     Node <|-- File
     Node <|-- Directory
     Directory "1" o-- "*" Node : filhos
-    FileSystemSimulator "1" --> "1" Directory : raiz
-    FileSystemSimulator "1" --> "0..1" Journal : journal
-    Journal ..> EntradaJournal : lê / grava
-    Shell --> FileSystemSimulator
-    Shell --> Journal
+    FileSystemSimulator --> Directory : raiz
+    FileSystemSimulator --> Journal : journal
+    Journal --> EntradaJournal : registra e recupera
+    Shell --> FileSystemSimulator : executa comandos
+    Shell --> Journal : consulta log
+
+    class Node {
+      nome
+      pai
+      criadoEm
+      modificadoEm
+      getCaminho()
+      getTamanho()
+      isDiretorio()
+    }
+
+    class File {
+      conteudo
+      getConteudo()
+      setConteudo()
+      copiar()
+    }
+
+    class Directory {
+      filhos
+      contem()
+      buscar()
+      listarFilhos()
+      estaVazio()
+    }
+
+    class FileSystemSimulator {
+      raiz
+      journal
+      ultimoIdAplicado
+      criarDiretorio()
+      apagarDiretorio()
+      renomearDiretorio()
+      criarArquivo()
+      copiarArquivo()
+      apagarArquivo()
+      renomearArquivo()
+      listar()
+      salvar()
+      carregar()
+    }
+
+    class Journal {
+      arquivoLog
+      proximoId
+      registrar()
+      confirmar()
+      abortar()
+      recuperar()
+      checkpoint()
+      lerEntradas()
+    }
+
+    class EntradaJournal {
+      id
+      tipo
+      parametros
+      timestamp
+      status
+    }
+
+    class Shell {
+      dirAtual
+      montar()
+      loop()
+      executarLinha()
+    }
 ```
 
 #### Classe `Node`
@@ -222,7 +228,7 @@ Como `Node`, `File`, `Directory` e `FileSystemSimulator` implementam `Serializab
 
 Cada operação que **altera** o sistema passa pelo mesmo fluxo interno, no método privado `executar` do `FileSystemSimulator`:
 
-```
+```text
 validar  ->  journal.registrar(tipo, parametros)  ->  executar a mudança  ->  journal.confirmar(id)
                     (BEGIN no disco)                   (árvore em memória)       (COMMIT no disco)
 ```
@@ -236,7 +242,7 @@ validar  ->  journal.registrar(tipo, parametros)  ->  executar a mudança  ->  j
 
 O journal é um **arquivo texto** separado da imagem (`<disco>.fs.journal`), usado **somente para acréscimos** (*append-only*). Cada linha é um registro, e cada gravação é feita com `StandardOpenOption.SYNC`, ou seja, o método só retorna depois que o dado está fisicamente no disco. É isso que garante o *write-ahead*.
 
-```
+```text
 BEGIN|id|timestamp|TIPO|parâmetro1|parâmetro2|#crc32
 COMMIT|id|timestamp|#crc32
 ABORT|id|timestamp|#crc32
@@ -263,7 +269,7 @@ O **status** de cada operação é obtido ao ler o log:
 
 Exemplo real de um journal após o sistema cair no meio de uma cópia: as operações 1 e 2 foram confirmadas, e a 3 ficou pendente.
 
-```
+```text
 BEGIN|1|2026-11-26T13:50:14.772573100|MKDIR|/docs|#74317584
 COMMIT|1|2026-11-26T13:50:14.785101300|#27ecf849
 BEGIN|2|2026-11-26T13:50:14.793136700|CREATE_FILE|/docs/a.txt|Olá \p mundo|#b89eda19
@@ -288,26 +294,53 @@ BEGIN|3|2026-11-26T13:50:14.800898400|COPY|/docs/a.txt|/docs/b.txt|#a22985ee
 
 ### 2.5 Checkpoint e recuperação
 
-```mermaid
-sequenceDiagram
-    participant U as Usuário / Shell
-    participant FS as FileSystemSimulator
-    participant J as Journal (.journal)
-    participant D as Imagem (.fs)
-    U->>FS: mkdir /docs
-    FS->>J: BEGIN #7 MKDIR /docs (sync)
-    FS->>FS: altera a árvore em memória
-    FS->>J: COMMIT #7 (sync)
-    Note over U,D: ... a cada 5 operações, no exit ou no comando checkpoint:
-    U->>J: checkpoint
-    J->>D: grava imagem em .tmp e troca pela atual
-    J->>J: esvazia o log
-    Note over U,D: Após uma queda, ao iniciar:
-    U->>D: carrega a última imagem
-    U->>J: recuperar()
-    J->>FS: reaplica CONFIRMADAS com id > ultimoIdAplicado
-    J-->>U: descarta PENDENTES
-    U->>J: checkpoint (log limpo)
+O fluxo de checkpoint e recuperação funciona da seguinte maneira:
+
+```text
+OPERAÇÃO NORMAL
+      |
+      v
+Usuário / Shell
+      |
+      v
+FileSystemSimulator
+      |
+      v
+Journal: grava BEGIN no disco
+      |
+      v
+Simulador altera a árvore em memória
+      |
+      v
+Journal: grava COMMIT no disco
+      |
+      v
+A cada 5 operações, no exit ou no comando checkpoint:
+      |
+      v
+Grava imagem em arquivo temporário (.tmp)
+      |
+      v
+Substitui a imagem anterior
+      |
+      v
+Esvazia o journal
+
+
+APÓS UMA QUEDA
+      |
+      v
+Carrega a última imagem salva
+      |
+      v
+Lê e recupera o journal
+      |
+      +----> Reaplica operações CONFIRMADAS ainda não salvas
+      |
+      +----> Descarta operações PENDENTES
+      |
+      v
+Realiza checkpoint e limpa o log
 ```
 
 - **Checkpoint**: a imagem é gravada primeiro em `disco.fs.tmp` e depois movida por cima de `disco.fs`, então uma queda durante a gravação não destrói a imagem anterior. Só depois o log é esvaziado.
@@ -340,15 +373,15 @@ Expõe um método por operação: `copiarArquivo`, `apagarArquivo`, `renomearArq
 
 ```java
 private void executar(String tipo, Runnable acao, String... parametros) {
-    if (journal == null) { acao.run(); return; }       // replay da recuperação
-    long id = journal.registrar(tipo, parametros);     // 1. BEGIN gravado no disco (write-ahead)
+    if (journal == null) { acao.run(); return; }
+    long id = journal.registrar(tipo, parametros);
     try {
-        acao.run();                                    // 2. altera a árvore
+        acao.run();
     } catch (RuntimeException e) {
-        journal.abortar(id);                           //    falhou: ABORT
+        journal.abortar(id);
         throw e;
     }
-    journal.confirmar(id);                             // 3. COMMIT gravado no disco
+    journal.confirmar(id);
     ultimoIdAplicado = id;
 }
 ```
@@ -406,7 +439,7 @@ Os testes não usam bibliotecas externas. Para simular a queda, o objeto em mem�
 | 3 | Queda **depois** do COMMIT, sem checkpoint | As 6 operações são **reaplicadas** e a árvore fica idêntica à de antes da queda |
 | 4 | Queda **durante** o checkpoint (imagem gravada, log não esvaziado) | Nada é reaplicado em dobro (graças ao `ultimoIdAplicado`) |
 | 5 | Linha do log cortada no meio | O CRC detecta e a linha é ignorada |
-| 6 | Conteúdo com `\|`, `\` e quebra de linha | O conteúdo sobrevive ao replay sem alteração |
+| 6 | Conteúdo com `|`, `\` e quebra de linha | O conteúdo sobrevive ao replay sem alteração |
 
 ---
 
@@ -420,19 +453,25 @@ Os testes não usam bibliotecas externas. Para simular a queda, o objeto em mem�
 
 ### 4.2 Estrutura do projeto
 
-```
+```text
 .
 ├── README.md
-├── executar.bat          # compila e executa (Windows)
-├── executar.sh           # compila e executa (Linux/macOS)
+├── executar.bat
+├── executar.sh
 ├── exemplos/
-│   └── demo.txt          # roteiro de comandos para o shell
+│   └── demo.txt
 └── src/simulador/
-    ├── Node.java  File.java  Directory.java  FsException.java
+    ├── Node.java
+    ├── File.java
+    ├── Directory.java
+    ├── FsException.java
     ├── FileSystemSimulator.java
-    ├── Journal.java  EntradaJournal.java
-    ├── Shell.java  Main.java
-    └── TesteJournal.java  DemoNucleo.java
+    ├── Journal.java
+    ├── EntradaJournal.java
+    ├── Shell.java
+    ├── Main.java
+    ├── TesteJournal.java
+    └── DemoNucleo.java
 ```
 
 Ao executar, é criada a pasta `data/` com o disco simulado (`disco.fs`) e o journal (`disco.fs.journal`).
@@ -440,27 +479,42 @@ Ao executar, é criada a pasta `data/` com o disco simulado (`disco.fs`) e o jou
 ### 4.3 Passo a passo
 
 1. Instale o JDK 17+ e confira no terminal:
-   ```
+
+   ```bash
    java -version
    javac -version
    ```
+
 2. Clone o repositório:
+
+   ```bash
+   git clone https://github.com/JuanDoth/Simulador-de-Sistema-de-Arquivos.git
+   cd Simulador-de-Sistema-de-Arquivos
    ```
-   git clone https://github.com/Soriedem76/TrabalhoAv3-SistemaOperacional.git
-   cd TrabalhoAv3-SistemaOperacional
-   ```
+
 3. Compile:
-   ```
+
+   ```bash
    javac -encoding UTF-8 -d out src/simulador/*.java
    ```
-   No PowerShell do Windows, se o curinga não funcionar, use `javac -encoding UTF-8 -d out (Get-ChildItem src\simulador\*.java)`.
-4. Execute o **shell interativo**:
+
+   No PowerShell do Windows, se o curinga não funcionar, use:
+
+   ```powershell
+   javac -encoding UTF-8 -d out (Get-ChildItem src\simulador\*.java)
    ```
+
+4. Execute o **shell interativo**:
+
+   ```bash
    java -cp out simulador.Main
    ```
+
    Ou use os scripts, que compilam e executam de uma vez: `executar.bat` (Windows) ou `./executar.sh` (Linux/macOS).
+
 5. Rode os **testes de falha e recuperação**:
-   ```
+
+   ```bash
    java -cp out simulador.TesteJournal
    ```
 
@@ -500,7 +554,7 @@ Ao executar, é criada a pasta `data/` com o disco simulado (`disco.fs`) e o jou
 
 #### Exemplo 1: uso normal do shell (`exemplos/demo.txt`)
 
-```
+```text
 === Simulador de Sistema de Arquivos com Journaling ===
 Disco novo criado: data/disco.fs
 Journal limpo: o disco foi desmontado corretamente.
@@ -553,7 +607,7 @@ Checkpoint feito. Disco desmontado com segurança.
 
 #### Exemplo 2: queda no meio de uma operação (antes do COMMIT)
 
-```
+```text
 fs:/$ mkdir /temp
 ok
 fs:/$ crash rm /docs/notas.txt
@@ -564,7 +618,7 @@ fs:/$ crash rm /docs/notas.txt
 
 Ao iniciar de novo, o journal recupera o sistema: o `mkdir /temp`, que foi confirmado, é **reaplicado**, e o `rm`, que não tinha COMMIT, é **descartado**. O arquivo continua existindo.
 
-```
+```text
 === Simulador de Sistema de Arquivos com Journaling ===
 Disco carregado: data/disco.fs
 == Recuperação pelo journal ==
@@ -579,7 +633,7 @@ fs:/$ ls /docs
 
 #### Exemplo 3: queda depois dos COMMITs, sem checkpoint
 
-```
+```text
 fs:/$ mkdir /a
 ok
 fs:/$ mkdir /b
@@ -595,7 +649,7 @@ fs:/$ kill
 
 A imagem do disco não tinha `/a` nem `/b`, mas o journal tinha. Na inicialização, eles são **refeitos**:
 
-```
+```text
 === Simulador de Sistema de Arquivos com Journaling ===
 Disco carregado: data/disco.fs
 == Recuperação pelo journal ==
@@ -612,7 +666,7 @@ fs:/$ ls /
 
 #### Exemplo 4: um comando por execução
 
-```
+```text
 > java -cp out simulador.Main touch /docs/x.txt "texto com espaço"
 === Simulador de Sistema de Arquivos com Journaling ===
 Disco carregado: data/disco.fs
@@ -628,7 +682,7 @@ texto com espaço
 
 #### Exemplo 5: testes automatizados
 
-```
+```text
 > java -cp out simulador.TesteJournal
 -> 1. Operações normais geram BEGIN + COMMIT (write-ahead)
      #1    26/11/2026 13:48:39 MKDIR       CONFIRMADA  "/docs"
@@ -654,8 +708,6 @@ texto com espaço
 
 Resultado: 6 passou, 0 falhou.
 ```
-
-<!-- Para o PDF, se quiserem, substituam ou complementem estes blocos por capturas de tela do terminal (prints). -->
 
 ---
 
