@@ -439,7 +439,7 @@ Os testes não usam bibliotecas externas. Para simular a queda, o objeto em mem�
 | 3 | Queda **depois** do COMMIT, sem checkpoint | As 6 operações são **reaplicadas** e a árvore fica idêntica à de antes da queda |
 | 4 | Queda **durante** o checkpoint (imagem gravada, log não esvaziado) | Nada é reaplicado em dobro (graças ao `ultimoIdAplicado`) |
 | 5 | Linha do log cortada no meio | O CRC detecta e a linha é ignorada |
-| 6 | Conteúdo com `|`, `\` e quebra de linha | O conteúdo sobrevive ao replay sem alteração |
+| 6 | Conteúdo com `\|`, `\` e quebra de linha | O conteúdo sobrevive ao replay sem alteração |
 
 ---
 
